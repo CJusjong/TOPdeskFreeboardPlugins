@@ -307,141 +307,442 @@
         }
     });
 
-	freeboard.loadDatasourcePlugin({
-		"type_name"   : "TableWidget",
-		"display_name": "Table",
-		 "description" : "Some sort of description <strong>with optional html!</strong>",
-		
-	
-	//Setting white-space to normal to override gridster's inherited value
-	freeboard.addStyle('table.list-table', "width: 100%; white-space: normal !important; ");
-	freeboard.addStyle('table.list-table td, table.list-table th', "padding: 2px 2px 2px 2px; vertical-align: top; ");
-	
-	var tableWidget = function (settings) {
-	        var self = this;
-	        var titleElement = $('<h2 class="section-title"></h2>');
-	        var stateElement = $('<div><table class="list-table"><thead/></table></div>');
-	        var currentSettings = settings;
-		//store our calculated values in an object
-		var stateObject = {};
-        
-		function updateState() {            			
-			stateElement.find('thead').empty();
-			stateElement.find('tbody').remove();
-			var bodyHTML = $('<tbody/>');
-			var classObject = {};
-			var classCounter = 0;
-			
-		    var replaceValue = (_.isUndefined(currentSettings.replace_value) ? '' : currentSettings.replace_value);			
-			
-			//only proceed if we have a valid JSON object
-			if (stateObject.value && stateObject.value.header && stateObject.value.data) {
-				var headerRow = $('<tr/>');
-				var templateRow = $('<tr/>');
-				var rowHTML;
-				
-				//Loop through the 'header' array, building up our header row and also a template row
-				try {					
-					$.each(stateObject.value.header, function(headerKey, headerName){
-						classObject[headerName] = 'td-' + classCounter;
-						headerRow.append($('<th/>').html(headerName));						
-						templateRow.append($('<td/>').addClass('td-' + classCounter).html(replaceValue));		
-						classCounter++;						
-					})					
-				} catch (e) {
-					console.log(e);
-				}
-				
-				//Loop through each 'data' object, cloning the templateRow and using the class to set the value in the correct <td>
-				try {
-					$.each(stateObject.value.data, function(k, v){
-						rowHTML = templateRow.clone();						
-						$.each(v, function(dataKey, dataValue){									
-							rowHTML.find('.' + classObject[dataKey]).html(dataValue);
-						})
-						bodyHTML.append(rowHTML);
-					})
-				} catch (e) {
-					console.log(e)
-				}	
-				
-				//Append the header and body
-				stateElement.find('thead').append(headerRow);
-				stateElement.find('table').append(bodyHTML);
-				
-				//show or hide the header based on the setting
-				if (currentSettings.show_header) {					
-					stateElement.find('thead').show();
-				} else {
-					stateElement.find('thead').hide();
-				}
-			}
+    // occupancy widget
+    const occupancyWidget = function (settings) {
+        const self = this;
+        const id = generateId();
+        let currentSettings = settings;
+        const canvas = $(`<canvas id="${id}" style="margin-top: 15px; margin-bottom: 15px"></canvas>`);
+        let theChart = null;
+
+        self.getHeight = () => {return (currentSettings.title && currentSettings.title.trim()) ? 4 : 3};
+        self.render = (containerElement) => {
+            $(containerElement).append(canvas);
+            appendTitle(currentSettings.title, id, document.getElementById(id).parentElement, '30px');
         }
-
-        this.render = function (element) {
-            $(element).append(titleElement).append(stateElement);
-        }		
-
-        this.onSettingsChanged = function (newSettings) {
+        self.onSettingsChanged = (newSettings) => {
             currentSettings = newSettings;
-            titleElement.html((_.isUndefined(newSettings.title) ? "" : newSettings.title));			
-            updateState();			
+            appendTitle(currentSettings.title, id, document.getElementById(id).parentElement, '30px');
         }
 
-        this.onCalculatedValueChanged = function (settingName, newValue) {
-            //whenver a calculated value changes, stored them in the variable 'stateObject'
-			stateObject[settingName] = newValue;
-            updateState();
+        self.onCalculatedValueChanged = function (settingName, newValue) {
+            if (theChart) theChart.destroy(); // if chart already exists destroy it
+
+            // if inner number exists destroy it
+            const inner = document.getElementById(id + 'inner');
+            if (inner) inner.remove();
+
+            // if error message exists, destroy it (and redisplay canvas)
+            const err = document.getElementById(id + 'error');
+            if (err) {
+                err.remove();
+                document.getElementById(id).style.display = 'inline-block';
+            }
+
+            if (IS_INTEGER.test(newValue) && IS_INTEGER.test(currentSettings.max)) {
+                let percentage = newValue/currentSettings.max * 100;
+                if (!Number.isInteger(percentage)) percentage = percentage.toFixed(1);
+                const donutColour = (percentage <= 100) ? 'rgb(39, 232, 111)' : 'rgb(222, 64, 64)'
+                const chartData = (percentage <= 100) ? [percentage, 100 - percentage] : [percentage];
+                const ctx = document.getElementById(id).getContext('2d');
+                theChart = new Chart(ctx, {
+                    type: (percentage > 0) ? 'Occupancy' : 'doughnut',
+                    data: {
+                        labels: ['Occupied (%)', 'Free (%)'],
+                        datasets: [{
+                            data: chartData,
+                            backgroundColor: [donutColour, 'rgba(211, 211, 211, 0.2)'],
+                            borderColor: 'rgba(0,0,0,0)',
+                            hoverOffset: 4
+                        }]
+                    },
+                    options: {
+                        legend: {display: false},
+                        cutoutPercentage: 75,
+                        animation: {duration: 0}
+                    }
+                });
+
+                const inner = document.createElement('div');
+                inner.classList.add('donut-inner');
+                inner.id = id + 'inner';
+                inner.innerHTML = percentage + "%";
+                document.getElementById(id).parentElement.append(inner);
+            } else {
+                document.getElementById(id).style.display = 'none';
+                createWidgetError(id);
+            }
         }
 
-        this.onDispose = function () {
-        }
+        // create rounded version of doughnut chart
+        Chart.defaults.Occupancy = Chart.helpers.clone(Chart.defaults.doughnut);
+        Chart.controllers.Occupancy = Chart.controllers.doughnut.extend({
+            draw: function () {
+                var ctx = this.chart.chart.ctx;
+                Chart.helpers.each(this.getMeta().data, function (arc) {
+                    arc.transition(1).draw();
+                    const vm = arc._view;
+                    const radius = (vm.outerRadius + vm.innerRadius) / 2;
+                    const thickness = (vm.outerRadius - vm.innerRadius) / 2;
+                    const angle = Math.PI - vm.endAngle - Math.PI / 2;
+                    ctx.save();
+                    ctx.fillStyle = vm.backgroundColor;
+                    ctx.translate(vm.x, vm.y);
+                    ctx.beginPath();
+                    ctx.arc(radius * Math.sin(angle), radius * Math.cos(angle), thickness, 0, 2 * Math.PI);
+                    ctx.arc(radius * Math.sin(Math.PI), radius * Math.cos(Math.PI), thickness, 0, 2 * Math.PI);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.restore();
+                });
+            },
+        });
+    }
 
-        this.getHeight = function () {    
-			var height = Math.ceil(stateElement.height() / 55);			
-			return (height > 0 ? height : 1);
-        }
-
-        this.onSettingsChanged(settings);
-    };
-
+    // sia recent activity widget configuration
     freeboard.loadWidgetPlugin({
-        type_name: "list",
-        display_name: "Table",
-        settings: [
+       "type_name": "sia_activity_widget",
+       "display_name": "SIA Activity Widget",
+       "description": "A widget for neatly displaying recent activity on your site",
+        "fill_size": false,
+        "external_scripts": ["https://momentjs.com/downloads/moment.js"],
+        "settings": [
             {
-                name: "title",
-                display_name: "Title",
-                type: "text"
+                "name": "title",
+                "display_name": "Title",
+                "type": "text"
             },
-			{
-                name: "show_header",
-                display_name: "Show Headers",
-				default_value: true,
-                type: "boolean"
-            },
-			{
-                name: "replace_value",
-                display_name: "Replace blank values",
-                type: "text"
-            },
-			{
-                name: "value",
-                display_name: "Value",
-                type: "calculated"
+            {
+                "name": "activity_source",
+                "display_name": "Activity Source",
+                "type": "calculated"
             }
         ],
         newInstance: function (settings, newInstanceCallback) {
-            newInstanceCallback(new tableWidget(settings));
+           newInstanceCallback(new recentActivityWidget(settings));
         }
     });
-	
-	
+
+    function appendTitle(text, widgetId, parentElement, marginBotton = null) {
+        const existingTitle = document.getElementById(widgetId + '-title');
+        if (existingTitle) existingTitle.remove();
+
+        if (text && text.trim()) {
+            const title = document.createElement('p');
+            title.id = widgetId + '-title';
+            title.classList.add('sia-widget-title');
+            if (marginBotton) title.style.marginBottom = marginBotton;
+            title.innerHTML = trimName(text.toUpperCase(), 30);
+            parentElement.insertBefore(title, parentElement.firstElementChild);
+            // document.getElementById(widgetId).parentElement.insertBefore(title, document.getElementById(widgetId));
+        }
+    }
+
+    // recent activity widget
+    const recentActivityWidget = function (settings) {
+        const self = this;
+        let currentSettings = settings;
+        const id = generateId();
+        const activity = $(`<table id="${id}" class="activity-table"></table>`);
+
+        self.getHeight = () => {return (currentSettings.title && currentSettings.title.trim()) ? 6 : 5};
+        self.render = (containerElement) => {
+            $(containerElement).append(activity);
+            appendTitle(currentSettings.title, id, document.getElementById(id).parentElement);
+        }
+        self.onSettingsChanged = (newSettings) => {
+            currentSettings = newSettings;
+            appendTitle(currentSettings.title, id, document.getElementById(id).parentElement);
+        }
+
+        self.onCalculatedValueChanged = (settingName, newValue) => {
+            $(activity).empty(); // clear existing activity html
+            const err = document.getElementById(id + 'error');
+            if (err) err.remove(); // if error message exists, destroy it
+
+            const recentActivity = Object.values(newValue);
+            if (sourceIsValid(recentActivity)) {
+
+                if (recentActivity.length == 0) {
+                    const noActivity = '<td style="text-align: center; padding-top: 20px;">No activity to show</td>'
+                    const row = $(`<tr>${noActivity}</tr>`);
+                    $(activity).append(row);
+                    return;
+                }
+
+                const maxLength = 30 - getLongestTimeString(newValue).length;
+                recentActivity.forEach((event) => {
+                    event.status = (event.rejected_sign_in) ? 'rejected sign in' : event.status.replace('_', ' ');
+                    const imageSrc = event.photo_url ? event.photo_url : 'https://www.gravatar.com/avatar/?d=mp';
+                    const image = `<img class="activity-img" width="30" height="30" src="${imageSrc}" />`
+                    const imageCell = `<td class="cell-fit-content">${image}</td>`;
+                    const textCell = `<td style="white-space: pre;">${trimName(event.name, maxLength)}\n${event.status}</td>`
+                    const prettyTime = moment(event.timestamp).fromNow();
+                    const timeCell = `<td class="time-cell cell-fit-content">${prettyTime}</td>`;
+                    const rowColour = (event.rejected_sign_in) ? '#ff5e5e' : '';
+                    const row = $(`<tr style="color: ${rowColour}">${imageCell + textCell + timeCell}</tr>`);
+                    $(activity).append(row);
+                });
+            } else {
+                createWidgetError(id);
+            }
+        }
+
+        function sourceIsValid(recentActivity) {
+            const validLength = recentActivity.length <= 5;
+            let validKeys = true;
+            recentActivity.forEach((event) => {
+                if (!validKeys) return;
+                validKeys = validKeys && (Object.keys(event).length == 5);
+                validKeys = validKeys && event.hasOwnProperty('name')
+                    && event.hasOwnProperty('rejected_sign_in')
+                    && event.hasOwnProperty('photo_url')
+                    && event.hasOwnProperty('status')
+                    && event.hasOwnProperty('timestamp');
+            });
+            return validLength && validKeys;
+        }
+
+        function getLongestTimeString(recentActivity) {
+            let currentLongest = '';
+            for (const index in recentActivity) {
+                const prettyTime = moment(recentActivity[0].timestamp).fromNow();
+                if (prettyTime.length > currentLongest.length) currentLongest = prettyTime;
+            }
+            return currentLongest;
+        }
+    }
+
+    function trimName(name, maxLength) {
+        if (name.length > maxLength) {return (name.substring(0, maxLength - 3) + '...')}
+        else return name;
+    }
+
+    // sia members status widget configuration
+    freeboard.loadWidgetPlugin({
+        "type_name": "sia_members_status_widget",
+        "display_name": "SIA Members Status Widget",
+        "description": "A widget for neatly displaying the status of group members",
+        "external_scripts": [
+            "https://rawcdn.githack.com/marcj/css-element-queries/4eae4654f4683923153d8dd8f5c0d1bc2067b2a8/src/ResizeSensor.js",
+            "https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"
+        ],
+        "fill_size": false,
+        "settings": [
+            {
+                "name": "title",
+                "display_name": "Title",
+                "type": "text"
+            },
+            {
+                "name": "group",
+                "display_name": "Group",
+                "type": "calculated",
+            },
+            {
+                "name": "height",
+                "display_name": "Height",
+                "type": "text",
+                "description": "Height of the widget (in blocks, not pixels!)"
+            },
+            {
+                "name": "siteID",
+                "display_name": "Site ID",
+                "type": "text",
+                "description": "Scope this widget to a specific site"
+            },
+            {
+                "name": "showSiteNames",
+                "display_name": "Show Site Names",
+                "type": "option",
+                "options": [
+                    {
+                        "name": "YES",
+                        "value": "true",
+                    },
+                    {
+                        "name": "NO",
+                        "value": "false",
+                    }
+                ]
+            },
+            {
+                "name": "showSignedOut",
+                "display_name": "Show Signed Out",
+                "type": "option",
+                "options": [
+                    {
+                        "name": "YES",
+                        "value": "true",
+                    },
+                    {
+                        "name": "NO",
+                        "value": "false",
+                    }
+                ]
+            }
+        ],
+        newInstance: function (settings, newInstanceCallback) {
+            newInstanceCallback(new membersStatusWidget(settings));
+        }
+    });
+
+    // sia members status widget
+    const membersStatusWidget = function (settings) {
+        const self = this;
+        const id = generateId();
+        const membersTable = $(`<table id="${id}" class="members-table"></table>`)
+        const tableWrapper = $(`<div style="overflow-y: auto"></div>`)
+        let currentSettings = settings;
+        let maxColumns = 1;
+        let resizeSensor = null;
+
+        self.render = (containerElement) => {
+            $(tableWrapper).append(membersTable);
+            $(containerElement).append(tableWrapper);
+            appendTitle(currentSettings.title, id, document.getElementById(id).parentElement.parentElement, '15px');
+        }
+        self.getHeight = () => {return !currentSettings.height ? 5 : currentSettings.height};
+        self.onSettingsChanged = (newSettings) => {
+            currentSettings = newSettings;
+            appendTitle(currentSettings.title, id, document.getElementById(id).parentElement.parentElement, '15px');
+        }
+
+        self.onCalculatedValueChanged = (settingName, newValue) => {
+            if (resizeSensor) resizeSensor.detach();
+            resizeSensor = new ResizeSensor(document.getElementById(id).parentElement, () => resizeTable(newValue));
+
+            drawMembersTable(newValue);
+
+            // Autoscroll behaviour
+            if( !$(tableWrapper).is(':animated') ) scrollToBottom();
+
+            document.getElementById(id).onmouseover = () => $(tableWrapper).stop();
+            document.getElementById(id).onmouseleave = () => scrollToBottom();
+        }
+
+        function drawMembersTable(newValue) {
+            $(membersTable).empty();
+
+            const err = document.getElementById(id + 'error');
+            if (err) err.remove(); // if error message exists, destroy it
+
+            if (sourceIsValid(newValue)) {
+                let copiedData = _.cloneDeep(newValue); // make deep copy of data
+
+                // make sure siteID has valid format
+                if (currentSettings.siteID) {
+                    if (!Number.isInteger(parseInt(currentSettings.siteID))) {
+                        createWidgetError(id);
+                        return;
+                    } else currentSettings.siteID = parseInt(currentSettings.siteID);
+                }
+
+                // map each member's status depending on siteID setting
+                if (currentSettings.siteID) {
+                    Object.values(copiedData).map(member => {
+                        if (member.current_site_id != currentSettings.siteID) member.status = "signed_out";
+                        return member;
+                    })
+                }
+
+                // fitler out any 'signed_out' members if 'showSignedOut' has been set to false
+                if (currentSettings.showSignedOut === 'false') {
+                    Object.keys(copiedData).map(key => {
+                        if (copiedData[key].status !== 'signed_in') delete copiedData[key];
+                    });
+                }
+
+                // set height
+                let newHeight = self.getHeight()*60;
+                if (currentSettings.title && currentSettings.title.trim()) newHeight -= 40
+                $(tableWrapper)[0].style.height = newHeight + "px";
+
+                const keys = Object.keys(copiedData);
+
+                // add members data to table
+                for (let x = 0; x < Math.ceil(Object.keys(copiedData).length/maxColumns); x++) {
+                    const row = $('<tr></tr>');
+                    let rowMembers = [];
+                    for (let y = 0; y < maxColumns; y++) {
+                        const index = (x * maxColumns) + y;
+                        rowMembers.push(keys[index]);
+                    }
+
+                    rowMembers.forEach((name) => {
+                        const member = copiedData[name];
+                        if (member === undefined) return;
+                        const imageSrc = member.photo_url ? member.photo_url : 'https://www.gravatar.com/avatar/?d=mp';
+                        const imageElement = `<img class="members-img" src="${imageSrc}" width="40" height="40" />`
+                        const spanElement = `<span class="${member.status === "signed_in" ? "online-dot" : ""}" />`
+                        const imageCell = `<td class="cell-fit-content">${imageElement + spanElement}</td>`
+                        let textCell;
+                        if (currentSettings.showSiteNames === 'true' && member.current_site_name != null) {
+                            textCell = `<td style="white-space: pre; font-size: 15px;">${trimName(name, 22)}\n${trimName(member.current_site_name, 22)}</td>`
+                        } else {
+                            textCell = `<td style="white-space: pre; font-size: 15px;">${trimName(name, 22)}</td>`
+                        }
+                        $(row).append(imageCell);
+                        $(row).append(textCell);
+                    });
+
+                    $(membersTable).append(row);
+                }
+            } else {
+                createWidgetError(id);
+            }
+        }
+
+        function sourceIsValid(members) {
+            let validKeys = true;
+            try {
+                for (const [name, data] of Object.entries(members)) {
+                    if (!validKeys) return;
+                    validKeys = validKeys && (Object.keys(data).length == 4);
+                    validKeys = validKeys && data.hasOwnProperty('photo_url')
+                        && data.hasOwnProperty('status')
+                        && data.hasOwnProperty('current_site_id')
+                        && data.hasOwnProperty('current_site_name');
+                }
+            } catch (e) {
+                validKeys = false;
+            }
+            return validKeys;
+        }
+
+        function resizeTable(newValue) {
+            const width = document.getElementById(id).clientWidth;
+            const newMaxColumns = Math.floor(width / 245);
+            if (newMaxColumns !== maxColumns) {
+                maxColumns = newMaxColumns; // update max columns
+                drawMembersTable(newValue);
+                $(tableWrapper).stop();
+                scrollToBottom();
+            }
+        }
+
+        function scrollToBottom() {
+            const scrollPos = document.getElementById(id).parentElement.scrollTop;
+            const widgetHeight = document.getElementById(id).clientHeight;
+            const scrollBottom = widgetHeight - (self.getHeight() * 60) + 100; // +100 is to add a pause at the bottom
+            const speed = 20;
+            const duration = ((scrollBottom-scrollPos) / speed) * 1000; // the 1000 is to convert from seconds to millis
+            $(tableWrapper).animate({scrollTop: scrollBottom}, duration, 'linear', scrollToTop);
+        }
+
+        function scrollToTop() {
+            const widgetHeight = document.getElementById(id).clientHeight;
+            const scrollPos = widgetHeight - (self.getHeight() * 60);
+            const speed = 20;
+            const duration = (scrollPos / speed) * 1000; // the 1000 is to convert from seconds to millis
+            $(tableWrapper).animate({scrollTop: 0}, duration, 'linear');
+        }
+    }
 
     // sia graph widget configuration
     freeboard.loadWidgetPlugin({
-        "type_name": "Test Graph_Widget",
-        "display_name": "Test Graph Widget",
+        "type_name": "sia_graph_widget",
+        "display_name": "SIA Graph Widget",
         "description": "A widget for graphically displaying your sign in data.",
         "external_scripts": [
             "https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.1/moment.min.js",
